@@ -30,9 +30,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-import torch
 import lancedb
-from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
 from llm import LLMClient
@@ -566,17 +564,21 @@ class BJJSearchRAGv2:
         self.llm = LLMClient(profile=profile, ollama_model=llm_model)
 
         # Load embedding model
-        print("Loading embedding model...")
-        self.embedder = SentenceTransformer(
-            "nomic-ai/nomic-embed-text-v1.5",
-            trust_remote_code=True
-        )
         if profile == "homeserver":
-            self._embed_device = "cpu"
+            # OpenAI embeddings via LLMClient - no local model needed
+            print("Using OpenAI embeddings (text-embedding-3-small)")
+            self.embedder = None
         else:
+            import torch
+            from sentence_transformers import SentenceTransformer
+            print("Loading embedding model...")
+            self.embedder = SentenceTransformer(
+                "nomic-ai/nomic-embed-text-v1.5",
+                trust_remote_code=True
+            )
             self.embedder = self.embedder.half().to("cuda")
             self._embed_device = "cuda"
-        self.embedder.max_seq_length = 8192
+            self.embedder.max_seq_length = 8192
 
         # Load reranker if enabled (laptop only)
         self.reranker = None
@@ -618,6 +620,10 @@ class BJJSearchRAGv2:
 
     def _embed_query(self, text: str, is_document: bool = False) -> np.ndarray:
         """Embed text with appropriate prefix."""
+        if self.profile == "homeserver":
+            return self.llm.embed(text, dimensions=self.embedding_dim)
+
+        import torch
         prefix = "search_document: " if is_document else "search_query: "
         prefixed = prefix + text
 
@@ -830,8 +836,8 @@ def main():
     parser = argparse.ArgumentParser(description="BJJ Transcript Search v2")
     parser.add_argument(
         "--db",
-        default="./data/bjj_search_db",
-        help="Path to LanceDB database"
+        default=None,
+        help="Path to LanceDB database (default: profile-dependent)"
     )
     parser.add_argument(
         "--model",
@@ -866,6 +872,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.db is None:
+        args.db = "./data/bjj_search_db_openai" if args.profile == "homeserver" else "./data/bjj_search_db"
 
     rag = BJJSearchRAGv2(
         db_path=args.db,

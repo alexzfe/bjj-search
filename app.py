@@ -210,8 +210,8 @@ def main():
     parser = argparse.ArgumentParser(description="BJJ Search Web Interface")
     parser.add_argument(
         "--db",
-        default="./data/bjj_search_db",
-        help="Path to LanceDB database"
+        default=None,
+        help="Path to LanceDB database (default: profile-dependent)"
     )
     parser.add_argument(
         "--model",
@@ -242,6 +242,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.db is None:
+        args.db = "./data/bjj_search_db_openai" if args.profile == "homeserver" else "./data/bjj_search_db"
 
     print("Initializing BJJ Search...")
     rag = BJJSearchRAGv2(

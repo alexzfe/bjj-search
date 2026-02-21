@@ -16,9 +16,7 @@ import os
 import argparse
 from pathlib import Path
 
-import torch
 import lancedb
-from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
 from llm import LLMClient
@@ -64,17 +62,21 @@ class BJJSearchRAG:
         self.llm = LLMClient(profile=profile, ollama_model=llm_model)
 
         # Load embedding model
-        print("Loading embedding model...")
-        self.embedder = SentenceTransformer(
-            "nomic-ai/nomic-embed-text-v1.5",
-            trust_remote_code=True
-        )
         if profile == "homeserver":
-            self._embed_device = "cpu"
+            # OpenAI embeddings via LLMClient - no local model needed
+            print("Using OpenAI embeddings (text-embedding-3-small)")
+            self.embedder = None
         else:
+            import torch
+            from sentence_transformers import SentenceTransformer
+            print("Loading embedding model...")
+            self.embedder = SentenceTransformer(
+                "nomic-ai/nomic-embed-text-v1.5",
+                trust_remote_code=True
+            )
             self.embedder = self.embedder.half().to("cuda")
             self._embed_device = "cuda"
-        self.embedder.max_seq_length = 8192
+            self.embedder.max_seq_length = 8192
 
         # Connect to vector database
         print(f"Connecting to database at {db_path}...")
@@ -89,14 +91,13 @@ class BJJSearchRAG:
 
     def _embed_query(self, query: str):
         """
-        Embed query using nomic's asymmetric search prefix.
-
-        Nomic uses different prefixes for queries vs documents:
-        - Documents: "search_document: {text}"
-        - Queries: "search_query: {text}"
-
-        This asymmetric approach improves retrieval quality.
+        Embed query using nomic's asymmetric search prefix (laptop)
+        or OpenAI text-embedding-3-small (homeserver).
         """
+        if self.profile == "homeserver":
+            return self.llm.embed(query, dimensions=self.embedding_dim)
+
+        import torch
         prefixed = "search_query: " + query
         with torch.no_grad():
             emb = self.embedder.encode(
@@ -261,8 +262,8 @@ def main():
     parser = argparse.ArgumentParser(description="BJJ Transcript Search")
     parser.add_argument(
         "--db",
-        default="./data/bjj_search_db",
-        help="Path to LanceDB database"
+        default=None,
+        help="Path to LanceDB database (default: profile-dependent)"
     )
     parser.add_argument(
         "--model",
@@ -287,6 +288,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.db is None:
+        args.db = "./data/bjj_search_db_openai" if args.profile == "homeserver" else "./data/bjj_search_db"
 
     rag = BJJSearchRAG(
         db_path=args.db,

@@ -2,7 +2,10 @@
 LLM abstraction layer for BJJ Search.
 
 Dispatches LLM calls to either Ollama (laptop profile) or OpenAI API (homeserver profile).
+Also provides OpenAI embeddings for the homeserver profile.
 """
+
+import numpy as np
 
 
 class LLMClient:
@@ -79,3 +82,12 @@ class LLMClient:
                 max_tokens=max_tokens,
             )
             return response.choices[0].message.content
+
+    def embed(self, text: str, dimensions: int = 512) -> np.ndarray:
+        """Embed text using OpenAI text-embedding-3-small. Only available for homeserver profile."""
+        response = self._openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=[text],
+            dimensions=dimensions,
+        )
+        return np.array(response.data[0].embedding, dtype=np.float32)
