@@ -258,6 +258,7 @@ def main():
     app = create_app(rag)
 
     app.launch(
+        server_name="0.0.0.0",
         server_port=args.port,
         share=args.share,
         show_error=True,
