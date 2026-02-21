@@ -12,12 +12,16 @@ Requirements:
     ollama pull llama3.1:8b
 """
 
-import ollama
-from sentence_transformers import SentenceTransformer
-import lancedb
-from pathlib import Path
-import torch
+import os
 import argparse
+from pathlib import Path
+
+import torch
+import lancedb
+from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+
+from llm import LLMClient
 
 
 class BJJSearchRAG:
@@ -38,7 +42,8 @@ class BJJSearchRAG:
         db_path: str,
         llm_model: str = "llama3.1:8b",
         embedding_dim: int = 512,
-        top_k: int = 15
+        top_k: int = 15,
+        profile: str = "laptop",
     ):
         """
         Initialize the RAG system.
@@ -48,34 +53,33 @@ class BJJSearchRAG:
             llm_model: Ollama model name for synthesis
             embedding_dim: Matryoshka dimension (512 recommended)
             top_k: Default number of chunks to retrieve
+            profile: Hardware profile (laptop or homeserver)
         """
         self.top_k = top_k
         self.llm_model = llm_model
         self.embedding_dim = embedding_dim
+        self.profile = profile
 
-        # Load embedding model (~1GB VRAM)
+        # LLM client (dispatches to Ollama or OpenAI based on profile)
+        self.llm = LLMClient(profile=profile, ollama_model=llm_model)
+
+        # Load embedding model
         print("Loading embedding model...")
         self.embedder = SentenceTransformer(
             "nomic-ai/nomic-embed-text-v1.5",
             trust_remote_code=True
         )
-        self.embedder = self.embedder.half().to("cuda")
+        if profile == "homeserver":
+            self._embed_device = "cpu"
+        else:
+            self.embedder = self.embedder.half().to("cuda")
+            self._embed_device = "cuda"
         self.embedder.max_seq_length = 8192
 
         # Connect to vector database
         print(f"Connecting to database at {db_path}...")
         self.db = lancedb.connect(db_path)
         self.table = self.db.open_table("transcripts")
-
-        # Verify Ollama is running
-        try:
-            ollama.list()
-            print(f"Ollama connected, using model: {llm_model}")
-        except Exception as e:
-            raise RuntimeError(
-                f"Ollama not running. Start with: ollama serve\n"
-                f"Then pull model: ollama pull {llm_model}"
-            ) from e
 
     def _format_timestamp(self, seconds: float) -> str:
         """Convert seconds to HH:MM:SS or MM:SS format."""
@@ -98,7 +102,7 @@ class BJJSearchRAG:
             emb = self.embedder.encode(
                 [prefixed],
                 convert_to_tensor=True,
-                device="cuda",
+                device=self._embed_device,
                 normalize_embeddings=True
             )
             # Matryoshka truncation to configured dimension
@@ -194,16 +198,11 @@ GUIDELINES:
 - Keep each summary to 2-3 sentences maximum
 - Use BJJ terminology accurately"""
 
-        response = ollama.chat(
-            model=self.llm_model,
+        return self.llm.chat(
             messages=[{"role": "user", "content": prompt}],
-            options={
-                "temperature": 0.3,  # Lower = more factual/consistent
-                "num_predict": 1024,  # Max tokens in response
-            }
+            temperature=0.3,
+            max_tokens=1024,
         )
-
-        return response["message"]["content"]
 
     def search(self, query: str, top_k: int = None) -> tuple[str, list[dict]]:
         """
@@ -257,6 +256,8 @@ GUIDELINES:
 
 def main():
     """Entry point for the search application."""
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description="BJJ Transcript Search")
     parser.add_argument(
         "--db",
@@ -278,13 +279,20 @@ def main():
         "--query",
         help="Single query (non-interactive mode)"
     )
+    parser.add_argument(
+        "--profile",
+        choices=["laptop", "homeserver"],
+        default=os.environ.get("PROFILE", "laptop"),
+        help="Hardware profile (default: from PROFILE env var, fallback: laptop)"
+    )
 
     args = parser.parse_args()
 
     rag = BJJSearchRAG(
         db_path=args.db,
         llm_model=args.model,
-        top_k=args.top_k
+        top_k=args.top_k,
+        profile=args.profile,
     )
 
     if args.query:

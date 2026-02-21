@@ -52,13 +52,18 @@ This system allows you to search through transcribed BJJ instructional videos us
 
 For v1 (original):
 ```bash
-pip install lancedb sentence-transformers ollama einops
+pip install lancedb sentence-transformers ollama einops python-dotenv
 ```
 
 For v2 (improved) - adds reranker and spaCy:
 ```bash
-pip install lancedb sentence-transformers ollama einops FlagEmbedding spacy
+pip install lancedb sentence-transformers ollama einops FlagEmbedding spacy python-dotenv
 python -m spacy download en_core_web_sm
+```
+
+For homeserver profile (OpenAI API instead of Ollama):
+```bash
+pip install openai python-dotenv
 ```
 
 ### Ollama

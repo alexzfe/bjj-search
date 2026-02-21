@@ -13,9 +13,12 @@ Requirements:
     pip install gradio
 """
 
+import os
 import argparse
+
 import gradio as gr
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Import the v2 RAG system
 from bjj_rag_v2 import (
@@ -81,7 +84,7 @@ def search(query: str, rag: BJJSearchRAGv2) -> tuple[str, str, str, str]:
 
     try:
         # Get intent
-        intent = classify_intent(query, rag.llm_model)
+        intent = classify_intent(query, rag.llm)
         intent_desc = INTENT_DESCRIPTIONS.get(intent, "understand this technique")
         intent_display = f"**{intent}** - {intent_desc}"
 
@@ -202,6 +205,8 @@ def create_app(rag: BJJSearchRAGv2) -> gr.Blocks:
 
 
 def main():
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description="BJJ Search Web Interface")
     parser.add_argument(
         "--db",
@@ -229,6 +234,12 @@ def main():
         action="store_true",
         help="Disable BGE reranker (faster, less accurate)"
     )
+    parser.add_argument(
+        "--profile",
+        choices=["laptop", "homeserver"],
+        default=os.environ.get("PROFILE", "laptop"),
+        help="Hardware profile (default: from PROFILE env var, fallback: laptop)"
+    )
 
     args = parser.parse_args()
 
@@ -236,7 +247,8 @@ def main():
     rag = BJJSearchRAGv2(
         db_path=args.db,
         llm_model=args.model,
-        use_reranker=not args.no_reranker
+        use_reranker=not args.no_reranker,
+        profile=args.profile,
     )
 
     print("Starting web interface...")

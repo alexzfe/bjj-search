@@ -20,6 +20,7 @@ Requirements:
     pip install lancedb sentence-transformers FlagEmbedding ollama numpy
 """
 
+import os
 import json
 import hashlib
 import argparse
@@ -30,9 +31,11 @@ from typing import Literal
 
 import numpy as np
 import torch
-import ollama
 import lancedb
 from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+
+from llm import LLMClient
 
 
 # =============================================================================
@@ -72,15 +75,15 @@ INTENT_EXPANSIONS = {
 }
 
 
-def classify_intent(query: str, llm_model: str = "llama3.1:8b") -> str:
-    """Classify query intent using local LLM."""
-    response = ollama.generate(
-        model=llm_model,
+def classify_intent(query: str, llm: LLMClient) -> str:
+    """Classify query intent using LLM."""
+    response = llm.generate(
         prompt=INTENT_CLASSIFICATION_PROMPT.format(query=query),
-        options={"temperature": 0.1, "num_predict": 10}
+        temperature=0.1,
+        max_tokens=10,
     )
 
-    intent = response["response"].strip().upper()
+    intent = response.strip().upper()
     valid_intents = {"EXECUTE", "ESCAPE", "DEFENSE", "COUNTER", "CONCEPT", "DRILL"}
     return intent if intent in valid_intents else "EXECUTE"
 
@@ -104,14 +107,14 @@ Write as if explaining to a student on the mat. Include specific details about:
 Passage:"""
 
 
-def generate_hypothetical_document(query: str, intent: str, llm_model: str = "llama3.1:8b") -> str:
+def generate_hypothetical_document(query: str, intent: str, llm: LLMClient) -> str:
     """Generate a hypothetical ideal answer for HyDE retrieval."""
-    response = ollama.generate(
-        model=llm_model,
+    response = llm.generate(
         prompt=HYDE_PROMPT.format(query=query, intent=intent),
-        options={"temperature": 0.7, "num_predict": 200}
+        temperature=0.7,
+        max_tokens=200,
     )
-    return response["response"].strip()
+    return response.strip()
 
 
 # =============================================================================
@@ -332,7 +335,7 @@ def score_relevance(
     query: str,
     intent: str,
     chunks: list[dict],
-    llm_model: str = "llama3.1:8b",
+    llm: LLMClient = None,
     min_score: int = 6
 ) -> list[dict]:
     """
@@ -355,15 +358,15 @@ def score_relevance(
         numbered_sources=numbered_sources
     )
 
-    response = ollama.generate(
-        model=llm_model,
+    response = llm.generate(
         prompt=prompt,
-        options={"temperature": 0.1, "num_predict": 600},
-        format="json"
+        temperature=0.1,
+        max_tokens=600,
+        json_output=True,
     )
 
     try:
-        scores = json.loads(response["response"])
+        scores = json.loads(response)
 
         # Attach scores to chunks
         for score_entry in scores:
@@ -452,7 +455,7 @@ def synthesize_answer(
     query: str,
     intent: str,
     chunks: list[dict],
-    llm_model: str = "llama3.1:8b"
+    llm: LLMClient = None,
 ) -> str:
     """Generate answer-first synthesis with source attribution."""
     if not chunks:
@@ -467,16 +470,11 @@ def synthesize_answer(
         formatted_chunks=formatted_chunks
     )
 
-    response = ollama.generate(
-        model=llm_model,
+    return llm.generate(
         prompt=prompt,
-        options={
-            "temperature": 0.3,
-            "num_predict": 1200,
-        }
+        temperature=0.3,
+        max_tokens=1200,
     )
-
-    return response["response"]
 
 
 # =============================================================================
@@ -556,12 +554,16 @@ class BJJSearchRAGv2:
         llm_model: str = "llama3.1:8b",
         embedding_dim: int = 512,
         top_k: int = 12,
-        use_reranker: bool = True
+        use_reranker: bool = True,
+        profile: str = "laptop",
     ):
         self.llm_model = llm_model
         self.embedding_dim = embedding_dim
         self.top_k = top_k
-        self.use_reranker = use_reranker
+        self.profile = profile
+
+        # LLM client (dispatches to Ollama or OpenAI based on profile)
+        self.llm = LLMClient(profile=profile, ollama_model=llm_model)
 
         # Load embedding model
         print("Loading embedding model...")
@@ -569,24 +571,32 @@ class BJJSearchRAGv2:
             "nomic-ai/nomic-embed-text-v1.5",
             trust_remote_code=True
         )
-        self.embedder = self.embedder.half().to("cuda")
+        if profile == "homeserver":
+            self._embed_device = "cpu"
+        else:
+            self.embedder = self.embedder.half().to("cuda")
+            self._embed_device = "cuda"
         self.embedder.max_seq_length = 8192
 
-        # Load reranker if enabled
+        # Load reranker if enabled (laptop only)
         self.reranker = None
-        if use_reranker:
-            print("Loading BGE reranker...")
-            try:
-                from FlagEmbedding import FlagReranker
-                self.reranker = FlagReranker(
-                    "BAAI/bge-reranker-v2-m3",
-                    use_fp16=True,
-                    device="cuda"
-                )
-            except ImportError:
-                print("Warning: FlagEmbedding not installed. Reranking disabled.")
-                print("Install with: pip install FlagEmbedding")
-                self.use_reranker = False
+        if profile == "homeserver":
+            self.use_reranker = False
+        else:
+            self.use_reranker = use_reranker
+            if use_reranker:
+                print("Loading BGE reranker...")
+                try:
+                    from FlagEmbedding import FlagReranker
+                    self.reranker = FlagReranker(
+                        "BAAI/bge-reranker-v2-m3",
+                        use_fp16=True,
+                        device="cuda"
+                    )
+                except ImportError:
+                    print("Warning: FlagEmbedding not installed. Reranking disabled.")
+                    print("Install with: pip install FlagEmbedding")
+                    self.use_reranker = False
 
         # Connect to database
         print(f"Connecting to database at {db_path}...")
@@ -595,16 +605,6 @@ class BJJSearchRAGv2:
 
         # Try to create FTS index if it doesn't exist
         self._ensure_fts_index()
-
-        # Verify Ollama
-        try:
-            ollama.list()
-            print(f"Ollama connected, using model: {llm_model}")
-        except Exception as e:
-            raise RuntimeError(
-                f"Ollama not running. Start with: ollama serve\n"
-                f"Then pull model: ollama pull {llm_model}"
-            ) from e
 
         print("Ready!\n")
 
@@ -625,7 +625,7 @@ class BJJSearchRAGv2:
             emb = self.embedder.encode(
                 [prefixed],
                 convert_to_tensor=True,
-                device="cuda",
+                device=self._embed_device,
                 normalize_embeddings=True
             )
             if self.embedding_dim < emb.shape[1]:
@@ -684,7 +684,7 @@ class BJJSearchRAGv2:
         # Stage 1: Intent classification
         if verbose:
             print("Classifying intent...")
-        intent = classify_intent(query, self.llm_model)
+        intent = classify_intent(query, self.llm)
         if verbose:
             print(f"  Intent: {intent}")
 
@@ -703,7 +703,7 @@ class BJJSearchRAGv2:
         # Pass 3: HyDE
         if verbose:
             print("Generating hypothetical document...")
-        hyde_doc = generate_hypothetical_document(query, intent, self.llm_model)
+        hyde_doc = generate_hypothetical_document(query, intent, self.llm)
         hyde_embedding = self._embed_query(hyde_doc, is_document=True)
         hyde_results = self._vector_search(hyde_embedding, limit=150)
 
@@ -766,8 +766,8 @@ class BJJSearchRAGv2:
             query=query,
             intent=intent,
             chunks=mmr_selected,
-            llm_model=self.llm_model,
-            min_score=6  # Stricter threshold to reduce wrong-intent results
+            llm=self.llm,
+            min_score=6,  # Stricter threshold to reduce wrong-intent results
         )
 
         final_chunks = scored[:self.top_k]
@@ -781,7 +781,7 @@ class BJJSearchRAGv2:
             query=query,
             intent=intent,
             chunks=final_chunks,
-            llm_model=self.llm_model
+            llm=self.llm,
         )
 
         return synthesis, final_chunks
@@ -825,6 +825,8 @@ class BJJSearchRAGv2:
 
 
 def main():
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description="BJJ Transcript Search v2")
     parser.add_argument(
         "--db",
@@ -856,6 +858,12 @@ def main():
         action="store_true",
         help="Show pipeline stages"
     )
+    parser.add_argument(
+        "--profile",
+        choices=["laptop", "homeserver"],
+        default=os.environ.get("PROFILE", "laptop"),
+        help="Hardware profile (default: from PROFILE env var, fallback: laptop)"
+    )
 
     args = parser.parse_args()
 
@@ -863,7 +871,8 @@ def main():
         db_path=args.db,
         llm_model=args.model,
         top_k=args.top_k,
-        use_reranker=not args.no_reranker
+        use_reranker=not args.no_reranker,
+        profile=args.profile,
     )
 
     if args.query:
