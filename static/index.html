@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BJJ Transcript Search</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>BJJ Transcript Search</h1>
+            <p class="subtitle">Search 716 videos &middot; 564 hours of BJJ instructionals</p>
+        </header>
+
+        <div class="search-box">
+            <form id="search-form">
+                <div class="search-input-wrap">
+                    <input
+                        type="text"
+                        id="search-input"
+                        placeholder="e.g., triangle escape, armbar from mount, heel hook defense..."
+                        autocomplete="off"
+                    >
+                    <button type="submit" id="search-btn">Search</button>
+                </div>
+            </form>
+            <div class="example-chips">
+                <button class="chip" data-query="triangle escape">triangle escape</button>
+                <button class="chip" data-query="armbar from mount">armbar from mount</button>
+                <button class="chip" data-query="heel hook defense">heel hook defense</button>
+                <button class="chip" data-query="half guard sweeps">half guard sweeps</button>
+                <button class="chip" data-query="back escape when they have hooks">back escape</button>
+                <button class="chip" data-query="closed guard attacks">closed guard attacks</button>
+                <button class="chip" data-query="pressure passing philosophy">pressure passing</button>
+                <button class="chip" data-query="kimura from side control">kimura from side control</button>
+            </div>
+        </div>
+
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <span>Searching 716 videos...</span>
+        </div>
+
+        <div id="results" class="results hidden">
+            <div class="results-header">
+                <span id="intent-badge" class="intent-badge"></span>
+                <span id="results-count" class="results-count"></span>
+            </div>
+            <p id="summary" class="summary"></p>
+            <div id="instructor-groups"></div>
+        </div>
+
+        <div id="error" class="error hidden"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

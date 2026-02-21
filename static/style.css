@@ -1,0 +1,335 @@
+*,
+*::before,
+*::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface-hover: #222633;
+    --border: #2a2e3d;
+    --text: #e4e6ed;
+    --text-muted: #8b8fa3;
+    --accent: #6c8cff;
+    --accent-hover: #8aa4ff;
+    --green: #34d399;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --radius: 8px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+.container {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+}
+
+/* Header */
+header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+header h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+.subtitle {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    margin-top: 0.25rem;
+}
+
+/* Search */
+.search-box {
+    margin-bottom: 1.5rem;
+}
+
+.search-input-wrap {
+    display: flex;
+    gap: 0.5rem;
+}
+
+#search-input {
+    flex: 1;
+    padding: 0.75rem 1rem;
+    font-size: 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+#search-input:focus {
+    border-color: var(--accent);
+}
+
+#search-input::placeholder {
+    color: var(--text-muted);
+}
+
+#search-btn {
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+}
+
+#search-btn:hover {
+    background: var(--accent-hover);
+}
+
+#search-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Example chips */
+.example-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.chip {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.8rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+}
+
+.chip:hover {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+/* Loading */
+.loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 2rem;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+}
+
+.spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Results */
+.results-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.intent-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+}
+
+.results-count {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.summary {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    margin-bottom: 1.5rem;
+    line-height: 1.7;
+}
+
+/* Instructor groups */
+.instructor-group {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+}
+
+.instructor-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+}
+
+.instructor-header:hover {
+    background: var(--surface-hover);
+}
+
+.instructor-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.clip-count {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.chevron {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    transition: transform 0.2s;
+}
+
+.instructor-group.open .chevron {
+    transform: rotate(180deg);
+}
+
+.instructor-body {
+    display: none;
+    border-top: 1px solid var(--border);
+}
+
+.instructor-group.open .instructor-body {
+    display: block;
+}
+
+/* Result rows */
+.result-row {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.result-row:last-child {
+    border-bottom: none;
+}
+
+.result-top {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.35rem;
+}
+
+.video-title {
+    font-weight: 500;
+    font-size: 0.875rem;
+}
+
+.timestamp {
+    font-size: 0.8rem;
+    color: var(--accent);
+    font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, monospace;
+}
+
+.score-badge {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    border-radius: 4px;
+    line-height: 1.4;
+}
+
+.score-high {
+    background: rgba(52, 211, 153, 0.15);
+    color: var(--green);
+}
+
+.score-mid {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--yellow);
+}
+
+.score-low {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--red);
+}
+
+.excerpt {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+
+/* Error */
+.error {
+    text-align: center;
+    padding: 1.5rem;
+    color: var(--red);
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.2);
+    border-radius: var(--radius);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .container {
+        padding: 1.25rem 1rem;
+    }
+
+    header h1 {
+        font-size: 1.35rem;
+    }
+
+    .search-input-wrap {
+        flex-direction: column;
+    }
+
+    #search-btn {
+        width: 100%;
+    }
+
+    .result-top {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.25rem;
+    }
+}
