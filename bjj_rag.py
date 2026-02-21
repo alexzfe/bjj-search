@@ -15,6 +15,7 @@ Requirements:
 import os
 import argparse
 from pathlib import Path
+from collections import defaultdict
 
 import lancedb
 from dotenv import load_dotenv
@@ -40,7 +41,7 @@ class BJJSearchRAG:
         db_path: str,
         llm_model: str = "llama3.1:8b",
         embedding_dim: int = 512,
-        top_k: int = 15,
+        top_k: int = 25,
         profile: str = "laptop",
     ):
         """
@@ -148,77 +149,75 @@ class BJJSearchRAG:
 
         return results.head(k).to_dict('records')
 
-    def _synthesize(self, query: str, chunks: list[dict]) -> str:
-        """
-        Use local LLM to summarize what each chunk says.
+    def _group_by_instructor(self, chunks: list[dict]) -> dict[str, list[dict]]:
+        """Group chunks by instructor (first directory component of video_file)."""
+        grouped = defaultdict(list)
 
-        The prompt instructs the model to:
-        1. Summarize the content of each chunk
-        2. Explain how it relates to the user's query
-        3. Skip chunks that aren't actually relevant
-        """
-        if not chunks:
+        for chunk in chunks:
+            video_path = chunk.get('video_file', '')
+            parts = Path(video_path).parts
+            instructor = parts[0] if parts else 'Unknown'
+
+            path = Path(video_path)
+            video_title = path.stem.replace('.json', '').replace('.opus', '')
+
+            start_time = chunk.get('start_time', 0)
+            end_time = chunk.get('end_time', start_time)
+
+            grouped[instructor].append({
+                'video_title': video_title,
+                'timestamp': self._format_timestamp(start_time),
+                'end_time': self._format_timestamp(end_time),
+                'text': chunk.get('text', '')[:200],
+                'relevance_score': 0,
+            })
+
+        return dict(sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True))
+
+    def _synthesize_brief(self, query: str, grouped: dict[str, list[dict]]) -> str:
+        """Generate a 2-3 sentence brief summary of what the sources cover."""
+        if not grouped:
             return "No relevant content found in the transcript database."
 
-        # Build context from retrieved chunks
-        context_blocks = []
-        for i, chunk in enumerate(chunks):
-            # Include folder path for context (e.g., "Instructor/Series/Video")
-            video_path = Path(chunk["video_file"])
-            video_name = f"{video_path.parent}/{video_path.stem}" if video_path.parent != Path('.') else video_path.stem
-            timestamp = self._format_timestamp(chunk["start_time"])
-            context_blocks.append(
-                f"[Source {i+1}: {video_name} @ {timestamp}]\n"
-                f"{chunk['text']}"
-            )
+        lines = []
+        for instructor, results in grouped.items():
+            snippets = [r['text'][:100] for r in results[:3]]
+            lines.append(f"- {instructor} ({len(results)} clips): {' | '.join(snippets)}")
 
-        context = "\n\n".join(context_blocks)
+        instructor_summary = "\n".join(lines)
 
-        # Synthesis prompt - focuses on summarizing chunk content
-        prompt = f"""You are analyzing BJJ (Brazilian Jiu-Jitsu) instructional video transcripts to help a practitioner find relevant techniques.
+        prompt = f"""You are summarizing BJJ video search results. Be EXTREMELY brief.
 
-USER'S QUESTION: {query}
+QUERY: {query}
 
-RETRIEVED TRANSCRIPT EXCERPTS:
-{context}
+INSTRUCTORS AND THEIR TOPICS:
+{instructor_summary}
 
-YOUR TASK:
-For each source that is relevant to the user's question, provide:
-1. The source reference (video name @ timestamp)
-2. A concise summary of what the instructor is teaching in that segment
-3. How this content addresses the user's question
+Write 2-3 sentences MAX summarizing what the sources cover. Rules:
+- ONLY mention themes/techniques that appear across MULTIPLE sources
+- Name specific instructors only if they have a distinctive approach
+- Do NOT teach the technique — just describe what coverage exists
+- Do NOT list every source — summarize the overall picture
 
-FORMAT YOUR RESPONSE LIKE THIS:
-**[Video-Name @ MM:SS]**
-Summary of what this segment covers and how it helps answer the question.
+Brief summary:"""
 
-GUIDELINES:
-- Summarize what the transcript SAYS, don't add information that isn't there
-- Focus on specific techniques, setups, grips, or concepts mentioned
-- Skip sources that aren't actually relevant to the question
-- Keep each summary to 2-3 sentences maximum
-- Use BJJ terminology accurately"""
-
-        return self.llm.chat(
-            messages=[{"role": "user", "content": prompt}],
+        return self.llm.generate(
+            prompt=prompt,
             temperature=0.3,
-            max_tokens=1024,
+            max_tokens=200,
         )
 
-    def search(self, query: str, top_k: int = None) -> tuple[str, list[dict]]:
+    def search(self, query: str, top_k: int = None) -> tuple[str, dict[str, list[dict]]]:
         """
-        Full RAG pipeline: retrieve chunks and synthesize summary.
-
-        Args:
-            query: Natural language search query
-            top_k: Number of chunks to retrieve (default: self.top_k)
+        Full RAG pipeline: retrieve chunks, group by instructor, brief summary.
 
         Returns:
-            Tuple of (synthesis_text, raw_chunks)
+            Tuple of (brief_summary, grouped_results)
         """
         chunks = self._retrieve(query, top_k)
-        synthesis = self._synthesize(query, chunks)
-        return synthesis, chunks
+        grouped = self._group_by_instructor(chunks)
+        summary = self._synthesize_brief(query, grouped)
+        return summary, grouped
 
     def interactive(self):
         """Run interactive search loop in terminal."""
@@ -243,14 +242,19 @@ GUIDELINES:
                 print("Query too short, please enter at least 3 characters.")
                 continue
 
-            print("\nSearching and synthesizing...\n")
+            print("\nSearching...\n")
 
             try:
-                synthesis, chunks = self.search(query)
-                print(synthesis)
+                summary, grouped = self.search(query)
+                print(summary)
                 print("\n" + "-" * 60)
-                print(f"Retrieved {len(chunks)} chunks | "
-                      f"Videos: {len(set(c['video_file'] for c in chunks))}")
+                total_results = sum(len(v) for v in grouped.values())
+                print(f"Results: {total_results} clips from {len(grouped)} instructors\n")
+                for instructor, results in grouped.items():
+                    print(f"\n  {instructor} ({len(results)} clips):")
+                    for r in results:
+                        print(f"    {r['video_title']} @ {r['timestamp']}-{r['end_time']}")
+                        print(f"           {r['text'][:100]}...")
             except Exception as e:
                 print(f"Error: {e}")
 
@@ -273,7 +277,7 @@ def main():
     parser.add_argument(
         "--top-k",
         type=int,
-        default=15,
+        default=25,
         help="Number of chunks to retrieve"
     )
     parser.add_argument(
@@ -301,8 +305,12 @@ def main():
 
     if args.query:
         # Single query mode
-        synthesis, _ = rag.search(args.query)
-        print(synthesis)
+        summary, grouped = rag.search(args.query)
+        print(summary)
+        for instructor, results in grouped.items():
+            print(f"\n{instructor} ({len(results)} clips):")
+            for r in results:
+                print(f"  {r['video_title']} @ {r['timestamp']}-{r['end_time']}")
     else:
         # Interactive mode
         rag.interactive()

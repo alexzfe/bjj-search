@@ -269,12 +269,12 @@ def mmr_select(
 
 def enforce_instructor_diversity(
     chunks: list[dict],
-    max_per_instructor: int = 3,
+    max_per_instructor: int = 8,
     score_key: str = "rerank_score"
 ) -> list[dict]:
     """
     Ensure no single instructor dominates results.
-    Max 3 allows for setup, execution, and troubleshooting from each voice.
+    Max 8 allows broad coverage from each instructor for source-first retrieval.
     """
     instructor_counts = defaultdict(int)
     selected = []
@@ -296,26 +296,19 @@ def enforce_instructor_diversity(
 # LLM Relevance Scoring
 # =============================================================================
 
-RELEVANCE_SCORING_PROMPT = """You are strictly evaluating search results for a BJJ technique query. Be HARSH - only high scores for exact matches.
+RELEVANCE_SCORING_PROMPT = """You are evaluating search results for a BJJ technique query.
 
 Query: {query}
 User Intent: {intent} (the user wants to {intent_description})
 
-CRITICAL SCORING RULES:
-- 9-10: ONLY if content directly addresses the EXACT technique AND matches the user's intent perfectly
-- 7-8: Addresses the technique with closely related intent (escape vs defense is close)
-- 5-6: Related but not what user asked for
-- 0-4: WRONG INTENT - give these low scores! Examples:
-  * User wants ESCAPE but content shows how to ATTACK/EXECUTE → score 0-3
-  * User wants EXECUTE but content shows how to DEFEND/ESCAPE → score 0-3
-  * Content about a different technique entirely → score 0-2
+SCORING RULES (0-10):
+- 8-10: Directly addresses the technique AND matches the user's intent
+- 6-7: Related technique or closely related intent (e.g., escape vs defense)
+- 4-5: Same position family but different focus
+- 1-3: WRONG INTENT (e.g., content about attacking when user wants to escape)
+- 0: Completely unrelated
 
-INTENT MATCHING IS CRITICAL:
-- "triangle escape" query → content about setting up triangles = score 0-2
-- "armbar from mount" query → content about escaping armbars = score 0-2
-- "heel hook defense" query → content about finishing heel hooks = score 0-2
-
-Be strict! When in doubt, score LOWER. It's better to exclude marginally relevant content than include wrong-intent content.
+Pay attention to INTENT: content about executing a triangle is NOT relevant if the user wants to escape a triangle.
 
 Sources to evaluate:
 {numbered_sources}
@@ -334,112 +327,88 @@ def score_relevance(
     intent: str,
     chunks: list[dict],
     llm: LLMClient = None,
-    min_score: int = 6
+    min_score: int = 4,
+    batch_size: int = 15
 ) -> list[dict]:
     """
-    Use LLM to score each chunk's relevance, filter low scores.
-    Stricter filtering (min_score=6) to reduce wrong-intent results.
+    Use LLM to score each chunk's relevance in batches, filter low scores.
+    Filters out wrong-intent results (min_score=4).
     """
     if not chunks:
         return []
 
-    # Format chunks for prompt (truncate to avoid token limits)
-    numbered_sources = "\n\n".join([
-        f"Source {i+1}:\n{chunk['text'][:600]}..."
-        for i, chunk in enumerate(chunks[:15])  # Max 15 sources
-    ])
+    # Score in batches to handle large candidate pools
+    for batch_start in range(0, len(chunks), batch_size):
+        batch = chunks[batch_start:batch_start + batch_size]
 
-    prompt = RELEVANCE_SCORING_PROMPT.format(
-        query=query,
-        intent=intent,
-        intent_description=INTENT_DESCRIPTIONS.get(intent, "understand this technique"),
-        numbered_sources=numbered_sources
-    )
+        numbered_sources = "\n\n".join([
+            f"Source {i+1}:\n{chunk['text'][:400]}..."
+            for i, chunk in enumerate(batch)
+        ])
 
-    response = llm.generate(
-        prompt=prompt,
-        temperature=0.1,
-        max_tokens=600,
-        json_output=True,
-    )
+        prompt = RELEVANCE_SCORING_PROMPT.format(
+            query=query,
+            intent=intent,
+            intent_description=INTENT_DESCRIPTIONS.get(intent, "understand this technique"),
+            numbered_sources=numbered_sources
+        )
 
-    try:
-        scores = json.loads(response)
+        response = llm.generate(
+            prompt=prompt,
+            temperature=0.1,
+            max_tokens=1500,
+            json_output=True,
+        )
 
-        # Attach scores to chunks
-        for score_entry in scores:
-            idx = score_entry["source_num"] - 1
-            if 0 <= idx < len(chunks):
-                chunks[idx]["llm_relevance_score"] = score_entry["score"]
-                chunks[idx]["relevance_reason"] = score_entry.get("reason", "")
+        try:
+            parsed = json.loads(response)
 
-        # Filter by minimum score
-        filtered = [c for c in chunks if c.get("llm_relevance_score", 0) >= min_score]
+            # Handle both bare list and wrapped {"results": [...]} formats
+            if isinstance(parsed, list):
+                scores = parsed
+            elif isinstance(parsed, dict):
+                scores = parsed.get("results", parsed.get("scores", parsed.get("data", [])))
+                if not isinstance(scores, list):
+                    scores = list(parsed.values())[0] if parsed else []
+            else:
+                scores = []
 
-        # Sort by LLM score
-        return sorted(filtered, key=lambda x: x.get("llm_relevance_score", 0), reverse=True)
+            # Attach scores to batch chunks
+            for score_entry in scores:
+                idx = score_entry["source_num"] - 1
+                if 0 <= idx < len(batch):
+                    batch[idx]["llm_relevance_score"] = score_entry["score"]
+                    batch[idx]["relevance_reason"] = score_entry.get("reason", "")
 
-    except (json.JSONDecodeError, KeyError, TypeError):
-        # Fallback: return original chunks if JSON parsing fails
-        return chunks
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass  # Batch failed, chunks keep default score of 0
+
+    # Filter by minimum score
+    filtered = [c for c in chunks if c.get("llm_relevance_score", 0) >= min_score]
+
+    # Sort by LLM score
+    return sorted(filtered, key=lambda x: x.get("llm_relevance_score", 0), reverse=True)
 
 
 # =============================================================================
-# Answer-First Synthesis
+# Brief Summary Synthesis
 # =============================================================================
 
-SYNTHESIS_PROMPT = """You are an expert BJJ assistant helping practitioners find techniques in their video library.
+SYNTHESIS_PROMPT = """You are summarizing BJJ video search results. Be EXTREMELY brief.
 
 QUERY: {query}
-INTENT: {intent} (user wants to {intent_description})
+INTENT: {intent}
 
-RELEVANT SOURCES:
-{formatted_chunks}
+INSTRUCTORS AND THEIR TOPICS:
+{instructor_summary}
 
-RESPONSE STRUCTURE (follow exactly):
+Write 2-3 sentences MAX summarizing what the sources cover. Rules:
+- ONLY mention themes/techniques that appear across MULTIPLE sources
+- Name specific instructors only if they have a distinctive approach
+- Do NOT teach the technique — just describe what coverage exists
+- Do NOT list every source — summarize the overall picture
 
-## Answer
-A synthesized response (2-4 paragraphs) that directly addresses the query, combining insights from the most relevant sources. Include specific technical details: grips, positioning, weight distribution, common mistakes. Reference sources inline like [Source 1] when citing specific points.
-
-## Key Timestamps
-For each highly relevant source, provide:
-- **[Video Title @ MM:SS]**: One sentence describing what's taught at this timestamp
-
-## Sources Used
-Bulleted list of all sources referenced, with relevance scores.
-
-RULES:
-- Only use information from the provided sources
-- If sources show different approaches, explain each
-- If sources don't adequately answer the query, say so explicitly
-- Be specific about techniques - vague summaries aren't helpful
-- Skip sources that aren't actually relevant to the query intent"""
-
-
-def format_chunks_for_synthesis(chunks: list[dict]) -> str:
-    """Format chunks with clear source attribution."""
-    formatted = []
-    for i, chunk in enumerate(chunks, 1):
-        video_path = Path(chunk.get("video_file", f"Video {i}"))
-        # Build a readable title from path components
-        if len(video_path.parts) >= 2:
-            video_title = f"{video_path.parts[0]}/{'/'.join(video_path.parts[-2:])}"
-        else:
-            video_title = video_path.stem
-        video_title = video_title.replace('.json', '')
-
-        timestamp = format_timestamp(chunk.get("start_time", 0))
-        relevance = chunk.get("llm_relevance_score", "N/A")
-
-        formatted.append(f"""
----
-SOURCE {i}: {video_title} @ {timestamp}
-Relevance Score: {relevance}/10
-
-{chunk['text']}
----""")
-
-    return "\n".join(formatted)
+Brief summary:"""
 
 
 def format_timestamp(seconds: float) -> str:
@@ -449,29 +418,88 @@ def format_timestamp(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def synthesize_answer(
+def extract_instructor(video_path: str) -> str:
+    """Extract instructor name from video file path (first directory component)."""
+    parts = Path(video_path).parts
+    return parts[0] if parts else 'Unknown'
+
+
+def group_results_by_instructor(chunks: list[dict]) -> dict[str, list[dict]]:
+    """
+    Group chunks by instructor, formatting each as a source result.
+
+    Returns dict like:
+    {
+        'John Danaher': [
+            {'video_title': '...', 'timestamp': '2:05', 'end_time': '3:30',
+             'text': '...first 200 chars...', 'relevance_score': 8},
+            ...
+        ],
+    }
+    """
+    grouped = defaultdict(list)
+
+    for chunk in chunks:
+        video_path = chunk.get('video_file', '')
+        instructor = extract_instructor(video_path)
+
+        # Build readable video title (last path component without extension)
+        path = Path(video_path)
+        video_title = path.stem.replace('.json', '').replace('.opus', '')
+
+        start_time = chunk.get('start_time', 0)
+        end_time = chunk.get('end_time', start_time)
+
+        grouped[instructor].append({
+            'video_title': video_title,
+            'timestamp': format_timestamp(start_time),
+            'end_time': format_timestamp(end_time),
+            'text': chunk.get('text', '')[:200],
+            'relevance_score': chunk.get('llm_relevance_score', 0),
+        })
+
+    # Sort each instructor's results by relevance score descending
+    for instructor in grouped:
+        grouped[instructor].sort(key=lambda x: x['relevance_score'], reverse=True)
+
+    # Sort instructors by their best result's score
+    sorted_grouped = dict(sorted(
+        grouped.items(),
+        key=lambda item: max(r['relevance_score'] for r in item[1]) if item[1] else 0,
+        reverse=True,
+    ))
+
+    return sorted_grouped
+
+
+def synthesize_brief_summary(
     query: str,
     intent: str,
-    chunks: list[dict],
+    grouped_results: dict[str, list[dict]],
     llm: LLMClient = None,
 ) -> str:
-    """Generate answer-first synthesis with source attribution."""
-    if not chunks:
+    """Generate a 2-3 sentence brief summary of what the sources cover."""
+    if not grouped_results:
         return "No relevant content found in the transcript database for this query."
 
-    formatted_chunks = format_chunks_for_synthesis(chunks)
+    # Build a compact instructor summary for the prompt
+    lines = []
+    for instructor, results in grouped_results.items():
+        snippets = [r['text'][:100] for r in results[:3]]
+        lines.append(f"- {instructor} ({len(results)} clips): {' | '.join(snippets)}")
+
+    instructor_summary = "\n".join(lines)
 
     prompt = SYNTHESIS_PROMPT.format(
         query=query,
         intent=intent,
-        intent_description=INTENT_DESCRIPTIONS.get(intent, "understand this technique"),
-        formatted_chunks=formatted_chunks
+        instructor_summary=instructor_summary,
     )
 
     return llm.generate(
         prompt=prompt,
         temperature=0.3,
-        max_tokens=1200,
+        max_tokens=200,
     )
 
 
@@ -531,7 +559,7 @@ def expand_context_dynamic(
 
 class BJJSearchRAGv2:
     """
-    Improved RAG system with heavy reranking and semantic discrimination.
+    Source-first RAG system for BJJ instructional video transcripts.
 
     Pipeline:
     1. Intent classification
@@ -542,8 +570,8 @@ class BJJSearchRAGv2:
     6. Timestamp deduplication
     7. MMR diversity selection
     8. LLM relevance scoring
-    9. Context expansion
-    10. Answer-first synthesis
+    9. Group by instructor
+    10. Brief summary synthesis
     """
 
     def __init__(
@@ -551,7 +579,7 @@ class BJJSearchRAGv2:
         db_path: str,
         llm_model: str = "llama3.1:8b",
         embedding_dim: int = 512,
-        top_k: int = 12,
+        top_k: int = 25,
         use_reranker: bool = True,
         profile: str = "laptop",
     ):
@@ -680,12 +708,13 @@ class BJJSearchRAGv2:
         ranked = sorted(documents, key=lambda x: x["rerank_score"], reverse=True)
         return ranked[:top_k]
 
-    def search(self, query: str, verbose: bool = False) -> tuple[str, list[dict]]:
+    def search(self, query: str, verbose: bool = False) -> tuple[str, dict[str, list[dict]]]:
         """
-        Full RAG pipeline with all improvements.
+        Full RAG pipeline optimized for source-first retrieval.
 
         Returns:
-            Tuple of (synthesis_text, final_chunks)
+            Tuple of (brief_summary, grouped_results) where grouped_results
+            is a dict keyed by instructor name.
         """
         # Stage 1: Intent classification
         if verbose:
@@ -739,31 +768,37 @@ class BJJSearchRAGv2:
             print("Deduplicating...")
         deduped = dedupe_by_timestamp(reranked, window_seconds=45.0, score_key="rerank_score")
 
-        # Stage 6: Instructor diversity
-        diverse = enforce_instructor_diversity(deduped, max_per_instructor=4, score_key="rerank_score")
+        # Stage 6: Instructor diversity (max 8 per instructor for broader coverage)
+        diverse = enforce_instructor_diversity(deduped, max_per_instructor=8, score_key="rerank_score")
 
-        # Stage 7: MMR selection for semantic diversity
-        if verbose:
-            print("Applying MMR diversity...")
-        query_embedding = self._embed_query(query)
+        # Stage 7: MMR selection for semantic diversity (laptop only — too many API calls for homeserver)
+        if self.profile == "laptop":
+            if verbose:
+                print("Applying MMR diversity...")
+            query_embedding = self._embed_query(query)
 
-        # Get embeddings for MMR candidates
-        candidate_embeddings = []
-        for doc in diverse[:30]:
-            emb = self._embed_query(doc["text"], is_document=True)
-            candidate_embeddings.append(emb)
+            mmr_pool = diverse[:40]
+            candidate_embeddings = []
+            for doc in mmr_pool:
+                emb = self._embed_query(doc["text"], is_document=True)
+                candidate_embeddings.append(emb)
 
-        if candidate_embeddings:
-            candidate_embeddings = np.array(candidate_embeddings)
-            mmr_selected = mmr_select(
-                query_embedding=query_embedding,
-                candidates=diverse[:30],
-                embeddings=candidate_embeddings,
-                k=self.top_k + 3,  # Get a few extra for LLM filtering
-                lambda_mult=0.6  # Slightly favor relevance over diversity
-            )
+            if candidate_embeddings:
+                candidate_embeddings = np.array(candidate_embeddings)
+                mmr_selected = mmr_select(
+                    query_embedding=query_embedding,
+                    candidates=mmr_pool,
+                    embeddings=candidate_embeddings,
+                    k=self.top_k * 3,
+                    lambda_mult=0.6
+                )
+            else:
+                mmr_selected = diverse[:self.top_k * 3]
         else:
-            mmr_selected = diverse[:self.top_k + 3]
+            # Homeserver: skip MMR, pass diverse pool directly to scoring
+            if verbose:
+                print("Skipping MMR (API mode)...")
+            mmr_selected = diverse[:self.top_k * 3]
 
         # Stage 8: LLM relevance scoring
         if verbose:
@@ -773,24 +808,27 @@ class BJJSearchRAGv2:
             intent=intent,
             chunks=mmr_selected,
             llm=self.llm,
-            min_score=6,  # Stricter threshold to reduce wrong-intent results
+            min_score=4,
         )
 
         final_chunks = scored[:self.top_k]
         if verbose:
             print(f"  {len(final_chunks)} chunks passed relevance filter")
 
-        # Stage 9: Synthesis
+        # Stage 9: Group by instructor
+        grouped_results = group_results_by_instructor(final_chunks)
+
+        # Stage 10: Brief summary synthesis
         if verbose:
-            print("Synthesizing answer...")
-        synthesis = synthesize_answer(
+            print("Generating brief summary...")
+        summary = synthesize_brief_summary(
             query=query,
             intent=intent,
-            chunks=final_chunks,
+            grouped_results=grouped_results,
             llm=self.llm,
         )
 
-        return synthesis, final_chunks
+        return summary, grouped_results
 
     def interactive(self):
         """Run interactive search loop."""
@@ -818,12 +856,17 @@ class BJJSearchRAGv2:
             print("\nProcessing...\n")
 
             try:
-                synthesis, chunks = self.search(query, verbose=True)
+                summary, grouped = self.search(query, verbose=True)
                 print("\n" + "=" * 60)
-                print(synthesis)
+                print(summary)
                 print("\n" + "-" * 60)
-                print(f"Final chunks: {len(chunks)} | "
-                      f"Videos: {len(set(c.get('video_file', '') for c in chunks))}")
+                total_results = sum(len(v) for v in grouped.values())
+                print(f"Results: {total_results} clips from {len(grouped)} instructors\n")
+                for instructor, results in grouped.items():
+                    print(f"\n  {instructor} ({len(results)} clips):")
+                    for r in results:
+                        print(f"    [{r['relevance_score']}/10] {r['video_title']} @ {r['timestamp']}-{r['end_time']}")
+                        print(f"           {r['text'][:100]}...")
             except Exception as e:
                 print(f"Error: {e}")
                 import traceback
@@ -847,7 +890,7 @@ def main():
     parser.add_argument(
         "--top-k",
         type=int,
-        default=12,
+        default=25,
         help="Number of final chunks"
     )
     parser.add_argument(
@@ -885,8 +928,12 @@ def main():
     )
 
     if args.query:
-        synthesis, _ = rag.search(args.query, verbose=args.verbose)
-        print(synthesis)
+        summary, grouped = rag.search(args.query, verbose=args.verbose)
+        print(summary)
+        for instructor, results in grouped.items():
+            print(f"\n{instructor} ({len(results)} clips):")
+            for r in results:
+                print(f"  [{r['relevance_score']}/10] {r['video_title']} @ {r['timestamp']}-{r['end_time']}")
     else:
         rag.interactive()
 
