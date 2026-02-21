@@ -441,11 +441,13 @@ def group_results_by_instructor(chunks: list[dict]) -> dict[str, list[dict]]:
 
     for chunk in chunks:
         video_path = chunk.get('video_file', '')
-        instructor = extract_instructor(video_path)
+        instructor = chunk.get('instructor') or extract_instructor(video_path)
 
-        # Build readable video title (last path component without extension)
-        path = Path(video_path)
-        video_title = path.stem.replace('.json', '').replace('.opus', '')
+        # Use video_title field if available, otherwise parse from path
+        video_title = chunk.get('video_title')
+        if not video_title:
+            path = Path(video_path)
+            video_title = path.stem.replace('.json', '').replace('.opus', '')
 
         start_time = chunk.get('start_time', 0)
         end_time = chunk.get('end_time', start_time)
@@ -917,7 +919,7 @@ def main():
     args = parser.parse_args()
 
     if args.db is None:
-        args.db = "./data/bjj_search_db_openai" if args.profile == "homeserver" else "./data/bjj_search_db"
+        args.db = "./data/bjj_search_db_v2" if args.profile == "homeserver" else "./data/bjj_search_db"
 
     rag = BJJSearchRAGv2(
         db_path=args.db,

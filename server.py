@@ -23,7 +23,7 @@ from bjj_rag_v2 import BJJSearchRAGv2, classify_intent, INTENT_DESCRIPTIONS
 load_dotenv()
 
 profile = os.environ.get("PROFILE", "laptop")
-db_path = "./data/bjj_search_db_openai" if profile == "homeserver" else "./data/bjj_search_db"
+db_path = "./data/bjj_search_db_v2" if profile == "homeserver" else "./data/bjj_search_db"
 
 print("Initializing BJJ Search...")
 rag = BJJSearchRAGv2(
