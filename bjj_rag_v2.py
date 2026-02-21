@@ -456,7 +456,7 @@ def group_results_by_instructor(chunks: list[dict]) -> dict[str, list[dict]]:
             'video_title': video_title,
             'timestamp': format_timestamp(start_time),
             'end_time': format_timestamp(end_time),
-            'text': chunk.get('text', '')[:200],
+            'text': chunk.get('text', '')[:500],
             'relevance_score': chunk.get('llm_relevance_score', 0),
         })
 
